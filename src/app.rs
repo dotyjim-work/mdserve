@@ -287,6 +287,21 @@ fn sort_tree(nodes: &mut [TreeNode]) {
     }
 }
 
+/// Returns true if the path contains a hidden directory component (dot-prefixed).
+fn is_in_hidden_dir(base_dir: &Path, path: &Path) -> bool {
+    path.strip_prefix(base_dir)
+        .ok()
+        .map(|rel| {
+            rel.components().any(|c| {
+                c.as_os_str()
+                    .to_str()
+                    .map(|s| s.starts_with('.'))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Handles a markdown file that may have been created or modified.
 /// Refreshes tracked files or adds new files in directory mode, sending reload notifications.
 async fn handle_markdown_file_change(path: &Path, state: &SharedMarkdownState) {
@@ -295,6 +310,11 @@ async fn handle_markdown_file_change(path: &Path, state: &SharedMarkdownState) {
     }
 
     let mut state_guard = state.lock().await;
+
+    // Skip files inside hidden directories (e.g. .venv, .git)
+    if is_in_hidden_dir(&state_guard.base_dir, path) {
+        return;
+    }
 
     let key = match relative_key(&state_guard.base_dir, path) {
         Some(k) => k,
@@ -862,6 +882,24 @@ mod tests {
             "application/octet-stream"
         );
         assert_eq!(guess_image_content_type("test"), "application/octet-stream");
+    }
+
+    #[test]
+    fn test_is_in_hidden_dir() {
+        let base = Path::new("/home/user/project");
+
+        assert!(is_in_hidden_dir(base, Path::new("/home/user/project/.venv/docs/readme.md")));
+        assert!(is_in_hidden_dir(base, Path::new("/home/user/project/.git/notes.md")));
+        assert!(is_in_hidden_dir(
+            base,
+            Path::new("/home/user/project/src/.hidden/file.md")
+        ));
+
+        assert!(!is_in_hidden_dir(base, Path::new("/home/user/project/README.md")));
+        assert!(!is_in_hidden_dir(
+            base,
+            Path::new("/home/user/project/docs/guide.md")
+        ));
     }
 
     #[test]

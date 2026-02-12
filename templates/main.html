@@ -9,7 +9,7 @@
     <script>
         (function() {
             // Apply theme immediately
-            const theme = localStorage.getItem('theme') || 'catppuccin-mocha';
+            const theme = localStorage.getItem('theme') || 'catppuccin-latte';
             document.documentElement.setAttribute('data-theme', theme);
             document.documentElement.classList.add('theme-initialized');
 
@@ -376,6 +376,38 @@
             left: 4px;
             cursor: e-resize;
         }
+
+        /* Sidebar Resize Handle */
+        .sidebar-resize-handle {
+            position: fixed;
+            top: 0;
+            width: 6px;
+            height: 100vh;
+            cursor: col-resize;
+            z-index: 103;
+            left: calc(var(--sidebar-width) - 3px);
+            transition: left var(--transition-speed) var(--transition-timing);
+        }
+
+        .sidebar-resize-handle::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 2px;
+            width: 2px;
+            height: 100%;
+            background: transparent;
+            transition: background 0.2s;
+        }
+
+        .sidebar-resize-handle:hover::after,
+        .sidebar-resize-handle.dragging::after {
+            background: var(--link-color);
+        }
+
+        body.sidebar-collapsed .sidebar-resize-handle {
+            display: none;
+        }
         {% else %}
         /* Single-file layout */
         body {
@@ -630,6 +662,45 @@
             if (isCollapsed) {
                 document.body.classList.add('sidebar-collapsed');
             }
+
+            // Restore saved sidebar width
+            const savedWidth = localStorage.getItem('sidebar-width');
+            if (savedWidth) {
+                document.documentElement.style.setProperty('--sidebar-width', savedWidth + 'px');
+            }
+
+            // Set up resize handle
+            const handle = document.getElementById('sidebarResizeHandle');
+            if (!handle) return;
+
+            let startX, startWidth;
+
+            handle.addEventListener('mousedown', function(e) {
+                e.preventDefault();
+                startX = e.clientX;
+                startWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
+                handle.classList.add('dragging');
+                document.body.style.userSelect = 'none';
+                document.body.style.cursor = 'col-resize';
+
+                function onMouseMove(e) {
+                    const newWidth = Math.min(Math.max(150, startWidth + e.clientX - startX), 500);
+                    document.documentElement.style.setProperty('--sidebar-width', newWidth + 'px');
+                }
+
+                function onMouseUp() {
+                    handle.classList.remove('dragging');
+                    document.body.style.userSelect = '';
+                    document.body.style.cursor = '';
+                    const finalWidth = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--sidebar-width'));
+                    localStorage.setItem('sidebar-width', finalWidth);
+                    document.removeEventListener('mousemove', onMouseMove);
+                    document.removeEventListener('mouseup', onMouseUp);
+                }
+
+                document.addEventListener('mousemove', onMouseMove);
+                document.addEventListener('mouseup', onMouseUp);
+            });
         }
 
         // Sidebar view toggle (tree / flat)
@@ -701,7 +772,7 @@
         }
 
         function initSidebarView() {
-            const view = localStorage.getItem('sidebar-view') || 'tree';
+            const view = localStorage.getItem('sidebar-view') || 'flat';
             setSidebarView(view);
             restoreTreeState();
         }
@@ -864,6 +935,7 @@
         <line x1="9" y1="3" x2="9" y2="21"></line>
     </svg>
 </button>
+<div class="sidebar-resize-handle" id="sidebarResizeHandle"></div>
 <nav class="sidebar">
     <div class="sidebar-header"></div>
     <div class="sidebar-content">
