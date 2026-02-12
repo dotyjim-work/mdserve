@@ -329,19 +329,57 @@
             display: block;
         }
 
+        /* Main Content Wrapper (navigation mode) */
+        #content-wrapper {
+            margin-left: var(--sidebar-width);
+            flex: 1;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            transition: margin-left var(--transition-speed) var(--transition-timing);
+        }
+
+        body.sidebar-collapsed #content-wrapper {
+            margin-left: var(--sidebar-collapsed-width);
+        }
+
+        /* Sticky File Path Bar */
+        .file-path-bar {
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            background: var(--code-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 8px 20px;
+            font-size: 13px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            color: var(--blockquote-color);
+            transition: background var(--transition-speed) var(--transition-timing),
+                        border-color var(--transition-speed) var(--transition-timing);
+        }
+
+        .file-path-text {
+            display: block;
+            max-width: var(--content-max-width);
+            margin: 0 auto;
+        }
+
         /* Main Content Area */
-        #content {
-            /* Center content in remaining space while avoiding sidebar overlap */
+        #content-wrapper #content {
+            max-width: var(--content-max-width);
+            margin: 0 auto;
+            padding: 20px;
+            flex: 1;
+        }
+
+        /* Single-file fallback (no wrapper) */
+        body:not(:has(#content-wrapper)) #content {
             margin-left: max(var(--sidebar-width), calc((100vw - var(--content-max-width)) / 2));
             margin-right: auto;
             max-width: var(--content-max-width);
             padding: 20px;
             min-height: 100vh;
             transition: margin-left var(--transition-speed) var(--transition-timing);
-        }
-
-        body.sidebar-collapsed #content {
-            margin-left: max(var(--sidebar-collapsed-width), calc((100vw - var(--content-max-width)) / 2));
         }
 
         /* Sidebar Toggle Button */
@@ -985,9 +1023,20 @@
 {% endif %}
 
 <button class="theme-toggle" onclick="openThemeModal()">🎨</button>
+{% if show_navigation %}
+<div id="content-wrapper">
+    <div class="file-path-bar">
+        <span class="file-path-text">{{ current_file }}</span>
+    </div>
+    <div id="content">
+    {{ content }}
+    </div>
+</div>
+{% else %}
 <div id="content">
 {{ content }}
 </div>
+{% endif %}
 
 <div class="theme-modal" id="themeModal">
     <div class="theme-modal-content">
