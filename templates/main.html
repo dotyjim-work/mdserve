@@ -160,13 +160,31 @@
         }
 
         .sidebar-header {
-            height: 68px; /* Space for toggle button */
+            height: 68px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            padding: 14px 12px 14px 56px;
+        }
+
+        .sidebar-header .theme-toggle {
+            position: static;
+            transition: background 0.2s var(--transition-timing),
+                        border-color var(--transition-speed) var(--transition-timing),
+                        opacity 0.2s var(--transition-timing);
+        }
+
+        body.sidebar-collapsed .sidebar-header .theme-toggle {
+            opacity: 0;
+            pointer-events: none;
         }
 
         .sidebar-content {
             padding: 0 20px 20px 20px;
             opacity: 1;
             transition: opacity 0.2s var(--transition-timing);
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 10px;
         }
 
         body.sidebar-collapsed .sidebar-content {
@@ -182,17 +200,16 @@
         }
 
         .file-list li {
-            margin-bottom: 4px;
+            margin-bottom: 1px;
         }
 
         .file-list a {
             display: block;
-            padding: 8px 12px;
+            padding: 4px 12px;
             color: var(--text-color);
             text-decoration: none;
             border-radius: 6px;
             transition: background 0.2s var(--transition-timing);
-            font-size: 14px;
         }
 
         .file-list a:hover,
@@ -264,10 +281,9 @@
         .tree-dir-header {
             display: flex;
             align-items: center;
-            padding: 6px 12px;
+            padding: 3px 12px;
             cursor: pointer;
             border-radius: 6px;
-            font-size: 14px;
             color: var(--text-color);
             transition: background 0.2s var(--transition-timing);
             user-select: none;
@@ -300,12 +316,11 @@
 
         .tree-file a {
             display: block;
-            padding: 6px 12px 6px 32px;
+            padding: 3px 12px 3px 32px;
             color: var(--text-color);
             text-decoration: none;
             border-radius: 6px;
             transition: background 0.2s var(--transition-timing);
-            font-size: 14px;
         }
 
         .tree-file a:hover,
@@ -975,7 +990,9 @@
 </button>
 <div class="sidebar-resize-handle" id="sidebarResizeHandle"></div>
 <nav class="sidebar">
-    <div class="sidebar-header"></div>
+    <div class="sidebar-header">
+        <button class="theme-toggle" onclick="openThemeModal()">🎨</button>
+    </div>
     <div class="sidebar-content">
         <div class="sidebar-view-toggle">
             <button id="tree-view-btn" onclick="setSidebarView('tree')" title="Tree view">Tree</button>
@@ -1022,7 +1039,9 @@
 </nav>
 {% endif %}
 
+{% if not show_navigation %}
 <button class="theme-toggle" onclick="openThemeModal()">🎨</button>
+{% endif %}
 {% if show_navigation %}
 <div id="content-wrapper">
     <div class="file-path-bar">
