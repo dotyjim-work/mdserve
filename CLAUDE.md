@@ -8,14 +8,29 @@ See the [README](README.md) for project overview and the
 
 ## Build and test
 
+All commands must be run via `nix develop` to get the correct Rust
+toolchain (the system Cargo may not support Cargo.lock v4):
+
 ```bash
-cargo build --release
-cargo test                            # all tests
-cargo test --test integration_test    # integration tests only
+nix develop -c cargo build --release
+nix develop -c cargo test             # all tests
+nix develop -c cargo test --test integration_test  # integration tests only
 ```
 
 Rust 1.82+, 2021 edition. Templates are embedded at compile time via
 minijinja-embed (changes to `templates/` require a rebuild).
+
+## Testing in the browser
+
+Use the Playwright MCP tools (`browser_navigate`, `browser_snapshot`,
+`browser_take_screenshot`, etc.) to verify UI changes. A good test
+directory with many nested markdown files:
+
+```bash
+nix develop -c cargo run --release -- ~/src/github.com/citrusleaf/par-eng-team
+```
+
+Then navigate to `http://127.0.0.1:3000/` with Playwright.
 
 ## Project structure
 
