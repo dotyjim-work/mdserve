@@ -137,10 +137,10 @@ mdserve README.md --open
 **Single-File Mode**: When you pass a file path, mdserve serves that specific markdown file with a clean, focused view.
 
 **Directory Mode**: When you pass a directory path, mdserve automatically:
-- Scans and serves all `.md` and `.markdown` files in that directory
-- Displays a navigation sidebar for easy switching between files
-- Watches for new markdown files added to the directory
-- Only monitors the immediate directory (non-recursive)
+- Recursively scans and serves all `.md` and `.markdown` files (skipping hidden directories)
+- Displays a navigation sidebar with tree and flat (most-recent) views
+- Watches for new markdown files added anywhere in the directory tree
+- Tree view mirrors the directory hierarchy; flat view sorts by last modified
 
 
 ## Themes

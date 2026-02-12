@@ -41,7 +41,7 @@ mdserve ./docs/
 
 Central state stores:
 - Base directory path
-- HashMap of tracked files (filename → metadata + pre-rendered HTML)
+- HashMap of tracked files (relative path → metadata + pre-rendered HTML)
 - Directory mode flag (determines UI)
 - WebSocket broadcast channel
 
@@ -78,20 +78,20 @@ tracked_files = {
 is_directory_mode = false
 ```
 
-Directory mode:
+Directory mode (keys are relative paths):
 ```
-base_dir = /path/to/docs/
+base_dir = /path/to/project/
 tracked_files = {
-  "api.md": TrackedFile { ... },
-  "guide.md": TrackedFile { ... },
-  "README.md": TrackedFile { ... }
+  "README.md": TrackedFile { ... },
+  "docs/api.md": TrackedFile { ... },
+  "docs/guide.md": TrackedFile { ... }
 }
 is_directory_mode = true
 ```
 
 ### Live Reload
 
-Uses [notify](https://github.com/notify-rs/notify) crate to watch base directory (non-recursive):
+Uses [notify](https://github.com/notify-rs/notify) crate to watch base directory recursively (hidden directories skipped during scanning):
 - Create/modify: Refresh file, add if new (directory mode only)
 - Delete: Remove from tracking
 - Rename: Remove old, add new
@@ -109,19 +109,18 @@ File changes flow:
 
 Single unified router handles both modes:
 - `GET /` → First file alphabetically
-- `GET /:filename.md` → Specific markdown file
-- `GET /:filename.<ext>` → Images from base directory
+- `GET /<path>` → Specific markdown file or image (via fallback handler)
 - `GET /ws` → WebSocket connection
 - `GET /mermaid.min.js` → Bundled Mermaid library
 
-The `:filename` pattern rejects paths with `/`, preventing directory traversal.
+Paths can contain `/` for nested files (e.g. `GET /docs/guide.md`). Path traversal is prevented by canonicalization and base directory checks.
 
 ### Rendering
 
 Uses [MiniJinja](https://github.com/mitsuhiko/minijinja) (Jinja2 template syntax) with templates embedded at compile time via [minijinja_embed](https://github.com/mitsuhiko/minijinja/tree/main/minijinja-embed).
 
 Conditional template rendering:
-- Directory mode: Includes navigation sidebar with active file highlighting
+- Directory mode: Includes navigation sidebar with tree and flat views, active file highlighting
 - Single-file mode: Content only
 - Both use same pre-rendered HTML from state
 
@@ -129,8 +128,9 @@ Template variables:
 - `content`: Pre-rendered markdown HTML
 - `mermaid_enabled`: Boolean flag, conditionally includes Mermaid.js when diagrams detected
 - `show_navigation`: Controls sidebar visibility
-- `files`: List of tracked files (directory mode)
-- `current_file`: Active file name (directory mode)
+- `tree`: Tree structure of files mirroring directory hierarchy (directory mode)
+- `flat_files`: Files sorted by last modified, most recent first (directory mode)
+- `current_file`: Active file relative path (directory mode)
 
 ## Design Decisions
 
@@ -138,12 +138,12 @@ Template variables:
 
 **Pre-rendered caching**: All tracked files rendered to HTML in memory on startup and file change. Serving always from memory, never from disk.
 
-**Non-recursive watching**: Only immediate directory, no subdirectories. Simplifies security and state management.
+**Recursive watching**: Scans and watches all subdirectories. Hidden directories (dot-prefixed like `.git`) are skipped during scanning.
 
 **Server-side logic**: Most logic lives server-side (markdown rendering, file tracking, navigation, active file highlighting, live reload triggering). Client-side JavaScript minimal (theme management, reload execution).
 
 ## Constraints
 
-- Non-recursive (flat directories only)
-- Alphabetical file ordering only
+- Hidden directories (dot-prefixed) are skipped during scanning
+- Tree view: alphabetical with directories before files; flat view: most recent first
 - All files pre-rendered in memory

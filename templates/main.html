@@ -207,6 +207,128 @@
             font-weight: 600;
         }
 
+        /* View Toggle Buttons */
+        .sidebar-view-toggle {
+            display: flex;
+            gap: 2px;
+            background: var(--border-color-light);
+            border-radius: 6px;
+            padding: 2px;
+            margin-bottom: 12px;
+        }
+
+        .sidebar-view-toggle button {
+            flex: 1;
+            background: transparent;
+            border: none;
+            border-radius: 4px;
+            padding: 5px 8px;
+            cursor: pointer;
+            font-size: 12px;
+            color: var(--text-color);
+            opacity: 0.6;
+            transition: all 0.2s var(--transition-timing);
+        }
+
+        .sidebar-view-toggle button:hover {
+            opacity: 0.8;
+        }
+
+        .sidebar-view-toggle button.active {
+            background: var(--bg-color);
+            opacity: 1;
+            font-weight: 600;
+        }
+
+        /* Tree View */
+        .file-tree {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .file-tree ul {
+            list-style: none;
+            padding-left: 16px;
+            margin: 0;
+        }
+
+        .tree-dir > .tree-children {
+            display: block;
+        }
+
+        .tree-dir.collapsed > .tree-children {
+            display: none;
+        }
+
+        .tree-dir-header {
+            display: flex;
+            align-items: center;
+            padding: 6px 12px;
+            cursor: pointer;
+            border-radius: 6px;
+            font-size: 14px;
+            color: var(--text-color);
+            transition: background 0.2s var(--transition-timing);
+            user-select: none;
+        }
+
+        .tree-dir-header:hover {
+            background: var(--border-color-light);
+        }
+
+        .tree-arrow {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            margin-right: 4px;
+            transition: transform 0.2s var(--transition-timing);
+            flex-shrink: 0;
+        }
+
+        .tree-arrow svg {
+            display: block;
+        }
+
+        .tree-dir.collapsed .tree-arrow {
+            transform: rotate(-90deg);
+        }
+
+        .tree-dir-name {
+            font-weight: 500;
+        }
+
+        .tree-file a {
+            display: block;
+            padding: 6px 12px 6px 32px;
+            color: var(--text-color);
+            text-decoration: none;
+            border-radius: 6px;
+            transition: background 0.2s var(--transition-timing);
+            font-size: 14px;
+        }
+
+        .tree-file a:hover,
+        .tree-file a:focus-visible {
+            background: var(--border-color-light);
+            outline: none;
+        }
+
+        .tree-file a.active {
+            background: var(--border-color-light);
+            color: var(--text-color);
+            font-weight: 600;
+        }
+
+        /* Sidebar Views */
+        .sidebar-view {
+            display: none;
+        }
+
+        .sidebar-view.active {
+            display: block;
+        }
+
         /* Main Content Area */
         #content {
             /* Center content in remaining space while avoiding sidebar overlap */
@@ -510,6 +632,80 @@
             }
         }
 
+        // Sidebar view toggle (tree / flat)
+        function setSidebarView(view) {
+            const treeView = document.getElementById('tree-view');
+            const flatView = document.getElementById('flat-view');
+            const treeBtn = document.getElementById('tree-view-btn');
+            const flatBtn = document.getElementById('flat-view-btn');
+
+            if (!treeView || !flatView) return;
+
+            if (view === 'flat') {
+                treeView.classList.remove('active');
+                flatView.classList.add('active');
+                if (treeBtn) treeBtn.classList.remove('active');
+                if (flatBtn) flatBtn.classList.add('active');
+            } else {
+                flatView.classList.remove('active');
+                treeView.classList.add('active');
+                if (flatBtn) flatBtn.classList.remove('active');
+                if (treeBtn) treeBtn.classList.add('active');
+            }
+
+            localStorage.setItem('sidebar-view', view);
+        }
+
+        function toggleTreeDir(header) {
+            const dirLi = header.closest('.tree-dir');
+            if (!dirLi) return;
+
+            dirLi.classList.toggle('collapsed');
+            saveTreeState();
+        }
+
+        function saveTreeState() {
+            const collapsed = [];
+            document.querySelectorAll('.tree-dir.collapsed').forEach(function(el) {
+                const path = getTreeDirPath(el);
+                if (path) collapsed.push(path);
+            });
+            localStorage.setItem('tree-collapsed', JSON.stringify(collapsed));
+        }
+
+        function getTreeDirPath(dirEl) {
+            const parts = [];
+            let el = dirEl;
+            while (el && el.classList.contains('tree-dir')) {
+                parts.unshift(el.getAttribute('data-dir') || '');
+                // Walk up: tree-dir > tree-children > tree-dir
+                el = el.parentElement && el.parentElement.closest('.tree-dir');
+            }
+            return parts.join('/');
+        }
+
+        function restoreTreeState() {
+            try {
+                const collapsed = JSON.parse(localStorage.getItem('tree-collapsed') || '[]');
+                if (!Array.isArray(collapsed) || collapsed.length === 0) return;
+
+                document.querySelectorAll('.tree-dir').forEach(function(el) {
+                    const path = getTreeDirPath(el);
+                    if (collapsed.includes(path)) {
+                        el.classList.add('collapsed');
+                    }
+                });
+            } catch (e) {
+                // Ignore invalid stored state
+            }
+        }
+
+        function initSidebarView() {
+            const view = localStorage.getItem('sidebar-view') || 'tree';
+            setSidebarView(view);
+            restoreTreeState();
+        }
+
         // Mermaid theme management
         function getMermaidTheme() {
             const currentTheme = document.documentElement.getAttribute('data-theme');
@@ -637,6 +833,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             initTheme();
             initSidebar();
+            initSidebarView();
             initMermaid();
             setupLiveReload();
 
@@ -670,15 +867,47 @@
 <nav class="sidebar">
     <div class="sidebar-header"></div>
     <div class="sidebar-content">
-        <ul class="file-list">
-            {% for file in files %}
-            <li>
-                <a href="/{{ file.name }}"{% if file.name == current_file %} class="active"{% endif %}>
-                    {{ file.name }}
-                </a>
-            </li>
-            {% endfor %}
-        </ul>
+        <div class="sidebar-view-toggle">
+            <button id="tree-view-btn" onclick="setSidebarView('tree')" title="Tree view">Tree</button>
+            <button id="flat-view-btn" onclick="setSidebarView('flat')" title="Flat view">Recent</button>
+        </div>
+
+        <div id="tree-view" class="sidebar-view active">
+            {% macro render_tree(nodes, current_file) %}
+            <ul{% if caller is undefined %} class="file-tree"{% endif %}>
+                {% for node in nodes %}
+                {% if node.is_dir %}
+                <li class="tree-dir" data-dir="{{ node.name }}">
+                    <div class="tree-dir-header" onclick="toggleTreeDir(this)">
+                        <span class="tree-arrow"><svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4z"/></svg></span>
+                        <span class="tree-dir-name">{{ node.name }}</span>
+                    </div>
+                    <div class="tree-children">
+                        {{ render_tree(node.children, current_file) }}
+                    </div>
+                </li>
+                {% else %}
+                <li class="tree-file">
+                    <a href="/{{ node.path|safe }}"{% if node.path == current_file %} class="active"{% endif %}>{{ node.name }}</a>
+                </li>
+                {% endif %}
+                {% endfor %}
+            </ul>
+            {% endmacro %}
+            {{ render_tree(tree, current_file) }}
+        </div>
+
+        <div id="flat-view" class="sidebar-view">
+            <ul class="file-list">
+                {% for file in flat_files %}
+                <li>
+                    <a href="/{{ file.name|safe }}"{% if file.name == current_file %} class="active"{% endif %}>
+                        {{ file.name }}
+                    </a>
+                </li>
+                {% endfor %}
+            </ul>
+        </div>
     </div>
 </nav>
 {% endif %}

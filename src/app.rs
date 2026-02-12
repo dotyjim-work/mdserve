@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
-        Path as AxumPath, State, WebSocketUpgrade,
+        State, WebSocketUpgrade,
     },
     http::{header, HeaderMap, StatusCode},
     response::{Html, IntoResponse},
@@ -60,10 +60,20 @@ use std::collections::HashMap;
 pub(crate) fn scan_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut md_files = Vec::new();
 
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
+    for entry in walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            e.depth() == 0
+                || !e
+                    .file_name()
+                    .to_str()
+                    .map(|s| s.starts_with('.'))
+                    .unwrap_or(false)
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.into_path();
         if path.is_file() && is_markdown_file(&path) {
             md_files.push(path);
         }
@@ -81,10 +91,25 @@ fn is_markdown_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn relative_key(base_dir: &Path, file_path: &Path) -> Option<String> {
+    file_path
+        .strip_prefix(base_dir)
+        .ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+}
+
 struct TrackedFile {
     path: PathBuf,
     last_modified: SystemTime,
     html: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TreeNode {
+    name: String,
+    path: String,
+    is_dir: bool,
+    children: Vec<TreeNode>,
 }
 
 struct MarkdownState {
@@ -105,10 +130,11 @@ impl MarkdownState {
             let content = fs::read_to_string(&file_path)?;
             let html = Self::markdown_to_html(&content)?;
 
-            let filename = file_path.file_name().unwrap().to_string_lossy().to_string();
+            let key = relative_key(&base_dir, &file_path)
+                .unwrap_or_else(|| file_path.file_name().unwrap().to_string_lossy().to_string());
 
             tracked_files.insert(
-                filename,
+                key,
                 TrackedFile {
                     path: file_path,
                     last_modified,
@@ -135,6 +161,29 @@ impl MarkdownState {
         filenames
     }
 
+    fn get_file_tree(&self) -> Vec<TreeNode> {
+        let keys = self.get_sorted_filenames();
+        let mut root_children: Vec<TreeNode> = Vec::new();
+
+        for key in &keys {
+            let parts: Vec<&str> = key.split('/').collect();
+            insert_into_tree(&mut root_children, &parts, key);
+        }
+
+        sort_tree(&mut root_children);
+        root_children
+    }
+
+    fn get_files_by_modified(&self) -> Vec<(String, SystemTime)> {
+        let mut files: Vec<(String, SystemTime)> = self
+            .tracked_files
+            .iter()
+            .map(|(key, tracked)| (key.clone(), tracked.last_modified))
+            .collect();
+        files.sort_by(|a, b| b.1.cmp(&a.1));
+        files
+    }
+
     fn refresh_file(&mut self, filename: &str) -> Result<()> {
         if let Some(tracked) = self.tracked_files.get_mut(filename) {
             let metadata = fs::metadata(&tracked.path)?;
@@ -151,9 +200,10 @@ impl MarkdownState {
     }
 
     fn add_tracked_file(&mut self, file_path: PathBuf) -> Result<()> {
-        let filename = file_path.file_name().unwrap().to_string_lossy().to_string();
+        let key = relative_key(&self.base_dir, &file_path)
+            .unwrap_or_else(|| file_path.file_name().unwrap().to_string_lossy().to_string());
 
-        if self.tracked_files.contains_key(&filename) {
+        if self.tracked_files.contains_key(&key) {
             return Ok(());
         }
 
@@ -161,7 +211,7 @@ impl MarkdownState {
         let content = fs::read_to_string(&file_path)?;
 
         self.tracked_files.insert(
-            filename,
+            key,
             TrackedFile {
                 path: file_path,
                 last_modified: metadata.modified()?,
@@ -184,6 +234,59 @@ impl MarkdownState {
     }
 }
 
+fn insert_into_tree(nodes: &mut Vec<TreeNode>, parts: &[&str], full_path: &str) {
+    if parts.is_empty() {
+        return;
+    }
+
+    if parts.len() == 1 {
+        // Leaf file node
+        nodes.push(TreeNode {
+            name: parts[0].to_string(),
+            path: full_path.to_string(),
+            is_dir: false,
+            children: Vec::new(),
+        });
+        return;
+    }
+
+    // Find or create directory node
+    let dir_name = parts[0];
+    let existing = nodes.iter_mut().find(|n| n.is_dir && n.name == dir_name);
+
+    match existing {
+        Some(dir_node) => {
+            insert_into_tree(&mut dir_node.children, &parts[1..], full_path);
+        }
+        None => {
+            let mut dir_node = TreeNode {
+                name: dir_name.to_string(),
+                path: String::new(),
+                is_dir: true,
+                children: Vec::new(),
+            };
+            insert_into_tree(&mut dir_node.children, &parts[1..], full_path);
+            nodes.push(dir_node);
+        }
+    }
+}
+
+fn sort_tree(nodes: &mut [TreeNode]) {
+    nodes.sort_by(|a, b| {
+        // Directories before files, then alphabetical
+        match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        }
+    });
+    for node in nodes.iter_mut() {
+        if node.is_dir {
+            sort_tree(&mut node.children);
+        }
+    }
+}
+
 /// Handles a markdown file that may have been created or modified.
 /// Refreshes tracked files or adds new files in directory mode, sending reload notifications.
 async fn handle_markdown_file_change(path: &Path, state: &SharedMarkdownState) {
@@ -191,16 +294,16 @@ async fn handle_markdown_file_change(path: &Path, state: &SharedMarkdownState) {
         return;
     }
 
-    let filename = path.file_name().and_then(|n| n.to_str()).map(String::from);
-    let Some(filename) = filename else {
-        return;
-    };
-
     let mut state_guard = state.lock().await;
 
+    let key = match relative_key(&state_guard.base_dir, path) {
+        Some(k) => k,
+        None => return,
+    };
+
     // If file is already tracked, refresh its content
-    if state_guard.tracked_files.contains_key(&filename) {
-        if state_guard.refresh_file(&filename).is_ok() {
+    if state_guard.tracked_files.contains_key(&key) {
+        if state_guard.refresh_file(&key).is_ok() {
             let _ = state_guard.change_tx.send(ServerMessage::Reload);
         }
     } else if state_guard.is_directory_mode {
@@ -301,7 +404,7 @@ fn new_router(
         Config::default(),
     )?;
 
-    watcher.watch(&base_dir, RecursiveMode::NonRecursive)?;
+    watcher.watch(&base_dir, RecursiveMode::Recursive)?;
 
     tokio::spawn(async move {
         let _watcher = watcher;
@@ -314,7 +417,7 @@ fn new_router(
         .route("/", get(serve_html_root))
         .route("/ws", get(websocket_handler))
         .route("/mermaid.min.js", get(serve_mermaid_js))
-        .route("/:filename", get(serve_file))
+        .fallback(get(serve_file))
         .layer(CorsLayer::permissive())
         .with_state(state);
 
@@ -440,9 +543,14 @@ async fn serve_html_root(State(state): State<SharedMarkdownState>) -> impl IntoR
 }
 
 async fn serve_file(
-    AxumPath(filename): AxumPath<String>,
+    uri: axum::http::Uri,
     State(state): State<SharedMarkdownState>,
 ) -> axum::response::Response {
+    let raw_path = uri.path().trim_start_matches('/');
+    let filename = urlencoding::decode(raw_path)
+        .unwrap_or_else(|_| raw_path.into())
+        .into_owned();
+
     if filename.ends_with(".md") || filename.ends_with(".markdown") {
         let mut state = state.lock().await;
 
@@ -482,10 +590,11 @@ async fn render_markdown(state: &MarkdownState, current_file: &str) -> (StatusCo
     };
 
     let rendered = if state.show_navigation() {
-        let filenames = state.get_sorted_filenames();
-        let files: Vec<Value> = filenames
+        let tree = state.get_file_tree();
+        let flat_files: Vec<Value> = state
+            .get_files_by_modified()
             .iter()
-            .map(|name| {
+            .map(|(name, _)| {
                 Value::from_object({
                     let mut map = std::collections::HashMap::new();
                     map.insert("name".to_string(), Value::from(name.clone()));
@@ -498,7 +607,8 @@ async fn render_markdown(state: &MarkdownState, current_file: &str) -> (StatusCo
             content => content,
             mermaid_enabled => has_mermaid,
             show_navigation => true,
-            files => files,
+            tree => Value::from_serialize(&tree),
+            flat_files => flat_files,
             current_file => current_file,
         }) {
             Ok(r) => r,
@@ -785,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_markdown_files_ignores_subdirectories() {
+    fn test_scan_markdown_files_includes_subdirectories() {
         let temp_dir = tempdir().expect("Failed to create temp dir");
 
         fs::write(temp_dir.path().join("root.md"), "# Root").expect("Failed to write");
@@ -796,8 +906,45 @@ mod tests {
 
         let result = scan_markdown_files(temp_dir.path()).expect("Failed to scan");
 
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_scan_markdown_files_skips_hidden_dirs() {
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+
+        fs::write(temp_dir.path().join("root.md"), "# Root").expect("Failed to write");
+
+        let hidden_dir = temp_dir.path().join(".hidden");
+        fs::create_dir(&hidden_dir).expect("Failed to create hidden dir");
+        fs::write(hidden_dir.join("secret.md"), "# Secret").expect("Failed to write");
+
+        let git_dir = temp_dir.path().join(".git");
+        fs::create_dir(&git_dir).expect("Failed to create .git dir");
+        fs::write(git_dir.join("notes.md"), "# Notes").expect("Failed to write");
+
+        let result = scan_markdown_files(temp_dir.path()).expect("Failed to scan");
+
         assert_eq!(result.len(), 1);
-        assert_eq!(result[0].file_name().unwrap().to_str().unwrap(), "root.md");
+    }
+
+    #[test]
+    fn test_scan_markdown_files_deeply_nested() {
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+
+        fs::write(temp_dir.path().join("root.md"), "# Root").expect("Failed to write");
+
+        let level1 = temp_dir.path().join("docs");
+        fs::create_dir(&level1).expect("Failed to create level1");
+        fs::write(level1.join("guide.md"), "# Guide").expect("Failed to write");
+
+        let level2 = level1.join("api");
+        fs::create_dir(&level2).expect("Failed to create level2");
+        fs::write(level2.join("reference.md"), "# Reference").expect("Failed to write");
+
+        let result = scan_markdown_files(temp_dir.path()).expect("Failed to scan");
+
+        assert_eq!(result.len(), 3);
     }
 
     #[test]
@@ -928,6 +1075,45 @@ mod tests {
 
     async fn create_directory_server_with_http() -> (TestServer, TempDir) {
         create_directory_server_impl(true)
+    }
+
+    fn create_nested_directory_server_impl(use_http: bool) -> (TestServer, TempDir) {
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+
+        fs::write(temp_dir.path().join("README.md"), "# README\n\nRoot readme")
+            .expect("Failed to write README.md");
+
+        let docs_dir = temp_dir.path().join("docs");
+        fs::create_dir(&docs_dir).expect("Failed to create docs dir");
+        fs::write(docs_dir.join("guide.md"), "# Guide\n\nA guide")
+            .expect("Failed to write guide.md");
+
+        let api_dir = docs_dir.join("api");
+        fs::create_dir(&api_dir).expect("Failed to create api dir");
+        fs::write(api_dir.join("reference.md"), "# API Reference\n\nAPI docs")
+            .expect("Failed to write reference.md");
+
+        let base_dir = temp_dir.path().to_path_buf();
+        let tracked_files = scan_markdown_files(&base_dir).expect("Failed to scan markdown files");
+        let is_directory_mode = true;
+
+        let router = new_router(base_dir, tracked_files, is_directory_mode)
+            .expect("Failed to create router");
+
+        let server = if use_http {
+            TestServer::builder()
+                .http_transport()
+                .build(router)
+                .expect("Failed to create test server")
+        } else {
+            TestServer::new(router).expect("Failed to create test server")
+        };
+
+        (server, temp_dir)
+    }
+
+    async fn create_nested_directory_server() -> (TestServer, TempDir) {
+        create_nested_directory_server_impl(false)
     }
 
     #[tokio::test]
@@ -1359,8 +1545,12 @@ classDiagram
             "test1.md link should have href and class on same line"
         );
 
+        // Both tree and flat views have active links (2 total)
         let active_link_count = body1.matches(r#"class="active""#).count();
-        assert_eq!(active_link_count, 1, "Should have exactly one active link");
+        assert_eq!(
+            active_link_count, 2,
+            "Should have active link in both tree and flat views"
+        );
 
         let response2 = server.get("/test2.markdown").await;
         assert_eq!(response2.status_code(), 200);
@@ -1742,5 +1932,81 @@ classDiagram
             !final_body.contains("Content of test1"),
             "Should not serve old content"
         );
+    }
+
+    #[tokio::test]
+    async fn test_directory_mode_serves_nested_files() {
+        let (server, _temp_dir) = create_nested_directory_server().await;
+
+        let response = server.get("/docs/guide.md").await;
+        assert_eq!(response.status_code(), 200);
+        let body = response.text();
+        assert!(body.contains("<h1>Guide</h1>"));
+
+        let response2 = server.get("/docs/api/reference.md").await;
+        assert_eq!(response2.status_code(), 200);
+        let body2 = response2.text();
+        assert!(body2.contains("<h1>API Reference</h1>"));
+    }
+
+    #[tokio::test]
+    async fn test_directory_mode_sidebar_shows_tree() {
+        let (server, _temp_dir) = create_nested_directory_server().await;
+
+        let response = server.get("/README.md").await;
+        assert_eq!(response.status_code(), 200);
+        let body = response.text();
+
+        assert!(body.contains("tree-dir"), "Should have tree directory nodes");
+        assert!(body.contains("tree-file"), "Should have tree file nodes");
+        assert!(body.contains("tree-view"), "Should have tree view container");
+        assert!(body.contains("flat-view"), "Should have flat view container");
+    }
+
+    #[tokio::test]
+    async fn test_directory_mode_active_highlighting_nested() {
+        let (server, _temp_dir) = create_nested_directory_server().await;
+
+        let response = server.get("/docs/guide.md").await;
+        assert_eq!(response.status_code(), 200);
+        let body = response.text();
+
+        assert!(
+            body.contains(r#"href="/docs/guide.md" class="active""#),
+            "Nested file should have active highlight"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nested_image_serving() {
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+
+        let docs_dir = temp_dir.path().join("docs");
+        fs::create_dir(&docs_dir).expect("Failed to create docs dir");
+
+        fs::write(
+            docs_dir.join("page.md"),
+            "# Page\n\n![Diagram](diagram.png)",
+        )
+        .expect("Failed to write page.md");
+
+        let png_data = vec![
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0x0F, 0x00, 0x00, 0x01, 0x00, 0x01, 0x5C, 0xDD, 0x8D, 0xB4, 0x00,
+            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+        ];
+        fs::write(docs_dir.join("diagram.png"), png_data).expect("Failed to write image");
+
+        let base_dir = temp_dir.path().to_path_buf();
+        let tracked_files = scan_markdown_files(&base_dir).expect("Failed to scan");
+        let router =
+            new_router(base_dir, tracked_files, true).expect("Failed to create router");
+        let server = TestServer::new(router).expect("Failed to create test server");
+
+        let img_response = server.get("/docs/diagram.png").await;
+        assert_eq!(img_response.status_code(), 200);
+        assert_eq!(img_response.header("content-type"), "image/png");
     }
 }
