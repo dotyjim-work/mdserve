@@ -377,6 +377,29 @@
             display: block;
             max-width: var(--content-max-width);
             margin: 0 auto;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .file-path-text:hover {
+            text-decoration: underline;
+        }
+
+        .file-path-text.copied::after {
+            content: 'Copied';
+            position: absolute;
+            right: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 11px;
+            opacity: 0.7;
+            animation: fade-out 1.2s ease forwards;
+        }
+
+        @keyframes fade-out {
+            0% { opacity: 0.7; }
+            70% { opacity: 0.7; }
+            100% { opacity: 0; }
         }
 
         /* Main Content Area */
@@ -670,6 +693,15 @@
             // Just update the theme selection UI to match current theme
             const currentTheme = document.documentElement.getAttribute('data-theme');
             updateThemeSelection(currentTheme);
+        }
+
+        function copyFilePath(el) {
+            navigator.clipboard.writeText(el.dataset.path).then(function() {
+                el.classList.remove('copied');
+                void el.offsetWidth;
+                el.classList.add('copied');
+                setTimeout(function() { el.classList.remove('copied'); }, 1300);
+            });
         }
 
         function openThemeModal() {
@@ -1045,7 +1077,7 @@
 {% if show_navigation %}
 <div id="content-wrapper">
     <div class="file-path-bar">
-        <span class="file-path-text">{{ current_file }}</span>
+        <span class="file-path-text" data-path="file://{{ file_full_path }}" onclick="copyFilePath(this)" title="Copy path to clipboard">{{ current_file }}</span>
     </div>
     <div id="content">
     {{ content }}

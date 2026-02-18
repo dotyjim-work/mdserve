@@ -623,6 +623,7 @@ async fn render_markdown(state: &MarkdownState, current_file: &str) -> (StatusCo
             })
             .collect();
 
+        let file_full_path = state.base_dir.join(current_file).display().to_string();
         match template.render(context! {
             content => content,
             mermaid_enabled => has_mermaid,
@@ -630,6 +631,7 @@ async fn render_markdown(state: &MarkdownState, current_file: &str) -> (StatusCo
             tree => Value::from_serialize(&tree),
             flat_files => flat_files,
             current_file => current_file,
+            file_full_path => file_full_path,
         }) {
             Ok(r) => r,
             Err(e) => {
