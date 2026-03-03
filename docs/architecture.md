@@ -91,7 +91,7 @@ is_directory_mode = true
 
 ### Live Reload
 
-Uses [notify](https://github.com/notify-rs/notify) crate to watch base directory recursively (hidden directories skipped during scanning):
+Uses [notify](https://github.com/notify-rs/notify) crate to watch base directory recursively (gitignored files/directories skipped during scanning; `.git/` always skipped):
 - Create/modify: Refresh file, add if new (directory mode only)
 - Delete: Remove from tracking
 - Rename: Remove old, add new
@@ -138,12 +138,12 @@ Template variables:
 
 **Pre-rendered caching**: All tracked files rendered to HTML in memory on startup and file change. Serving always from memory, never from disk.
 
-**Recursive watching**: Scans and watches all subdirectories. Hidden directories (dot-prefixed like `.git`) are skipped during scanning.
+**Recursive watching**: Scans and watches all subdirectories. Gitignored files/directories are skipped during scanning; `.git/` is always skipped. Non-gitignored dot-prefixed directories (e.g. `.claude/`) are included.
 
 **Server-side logic**: Most logic lives server-side (markdown rendering, file tracking, navigation, active file highlighting, live reload triggering). Client-side JavaScript minimal (theme management, reload execution).
 
 ## Constraints
 
-- Hidden directories (dot-prefixed) are skipped during scanning
+- Gitignored files/directories are skipped during scanning; `.git/` always skipped
 - Tree view: alphabetical with directories before files; flat view: most recent first
 - All files pre-rendered in memory

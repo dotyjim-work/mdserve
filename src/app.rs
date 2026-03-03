@@ -58,19 +58,20 @@ enum ServerMessage {
 use std::collections::HashMap;
 
 pub(crate) fn scan_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    use ignore::overrides::OverrideBuilder;
+    use ignore::WalkBuilder;
+
+    let mut overrides = OverrideBuilder::new(dir);
+    overrides.add("!.git/")?;
+    let overrides = overrides.build()?;
+
     let mut md_files = Vec::new();
 
-    for entry in walkdir::WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            e.depth() == 0
-                || !e
-                    .file_name()
-                    .to_str()
-                    .map(|s| s.starts_with('.'))
-                    .unwrap_or(false)
-        })
+    for entry in WalkBuilder::new(dir)
+        .hidden(false)
+        .git_ignore(true)
+        .overrides(overrides)
+        .build()
         .filter_map(|e| e.ok())
     {
         let path = entry.into_path();
@@ -117,11 +118,39 @@ struct MarkdownState {
     tracked_files: HashMap<String, TrackedFile>,
     is_directory_mode: bool,
     change_tx: broadcast::Sender<ServerMessage>,
+    gitignore: ignore::gitignore::Gitignore,
+}
+
+fn build_gitignore(base_dir: &Path) -> ignore::gitignore::Gitignore {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(base_dir);
+
+    let gitignore_path = base_dir.join(".gitignore");
+    if gitignore_path.exists() {
+        let _ = builder.add(&gitignore_path);
+    }
+
+    let exclude_path = base_dir.join(".git/info/exclude");
+    if exclude_path.exists() {
+        let _ = builder.add(&exclude_path);
+    }
+
+    if let Some(global) = ignore::gitignore::gitconfig_excludes_path() {
+        if global.exists() {
+            let _ = builder.add(&global);
+        }
+    }
+
+    builder.build().unwrap_or_else(|_| {
+        ignore::gitignore::GitignoreBuilder::new(base_dir)
+            .build()
+            .unwrap()
+    })
 }
 
 impl MarkdownState {
     fn new(base_dir: PathBuf, file_paths: Vec<PathBuf>, is_directory_mode: bool) -> Result<Self> {
         let (change_tx, _) = broadcast::channel::<ServerMessage>(16);
+        let gitignore = build_gitignore(&base_dir);
 
         let mut tracked_files = HashMap::new();
         for file_path in file_paths {
@@ -148,6 +177,7 @@ impl MarkdownState {
             tracked_files,
             is_directory_mode,
             change_tx,
+            gitignore,
         })
     }
 
@@ -287,19 +317,26 @@ fn sort_tree(nodes: &mut [TreeNode]) {
     }
 }
 
-/// Returns true if the path contains a hidden directory component (dot-prefixed).
-fn is_in_hidden_dir(base_dir: &Path, path: &Path) -> bool {
-    path.strip_prefix(base_dir)
-        .ok()
-        .map(|rel| {
-            rel.components().any(|c| {
-                c.as_os_str()
-                    .to_str()
-                    .map(|s| s.starts_with('.'))
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false)
+/// Returns true if the path should be ignored: always true for `.git/` components,
+/// otherwise checks the gitignore matcher.
+fn is_ignored_path(base_dir: &Path, path: &Path, gitignore: &ignore::gitignore::Gitignore) -> bool {
+    let rel = match path.strip_prefix(base_dir) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    // Always skip .git directory
+    if rel
+        .components()
+        .any(|c| c.as_os_str() == ".git")
+    {
+        return true;
+    }
+
+    let is_dir = path.is_dir();
+    gitignore
+        .matched_path_or_any_parents(rel, is_dir)
+        .is_ignore()
 }
 
 /// Handles a markdown file that may have been created or modified.
@@ -311,8 +348,8 @@ async fn handle_markdown_file_change(path: &Path, state: &SharedMarkdownState) {
 
     let mut state_guard = state.lock().await;
 
-    // Skip files inside hidden directories (e.g. .venv, .git)
-    if is_in_hidden_dir(&state_guard.base_dir, path) {
+    // Skip files inside .git or matched by gitignore rules
+    if is_ignored_path(&state_guard.base_dir, path, &state_guard.gitignore) {
         return;
     }
 
@@ -887,21 +924,29 @@ mod tests {
     }
 
     #[test]
-    fn test_is_in_hidden_dir() {
-        let base = Path::new("/home/user/project");
+    fn test_is_ignored_path() {
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+        let base = temp_dir.path();
 
-        assert!(is_in_hidden_dir(base, Path::new("/home/user/project/.venv/docs/readme.md")));
-        assert!(is_in_hidden_dir(base, Path::new("/home/user/project/.git/notes.md")));
-        assert!(is_in_hidden_dir(
-            base,
-            Path::new("/home/user/project/src/.hidden/file.md")
-        ));
+        // Create a .gitignore that ignores .venv/
+        fs::write(base.join(".gitignore"), ".venv/\n").expect("Failed to write .gitignore");
 
-        assert!(!is_in_hidden_dir(base, Path::new("/home/user/project/README.md")));
-        assert!(!is_in_hidden_dir(
-            base,
-            Path::new("/home/user/project/docs/guide.md")
-        ));
+        // Need git init for the gitignore to be meaningful in the walker,
+        // but the is_ignored_path function uses the Gitignore matcher directly
+        let gitignore = build_gitignore(base);
+
+        // .git is always ignored regardless of gitignore
+        assert!(is_ignored_path(base, &base.join(".git/notes.md"), &gitignore));
+
+        // .venv is gitignored
+        assert!(is_ignored_path(base, &base.join(".venv/docs/readme.md"), &gitignore));
+
+        // .claude is NOT gitignored — should pass through
+        assert!(!is_ignored_path(base, &base.join(".claude/docs/readme.md"), &gitignore));
+
+        // Regular paths are not ignored
+        assert!(!is_ignored_path(base, &base.join("README.md"), &gitignore));
+        assert!(!is_ignored_path(base, &base.join("docs/guide.md"), &gitignore));
     }
 
     #[test]
@@ -950,22 +995,128 @@ mod tests {
     }
 
     #[test]
-    fn test_scan_markdown_files_skips_hidden_dirs() {
+    fn test_scan_markdown_files_respects_gitignore() {
         let temp_dir = tempdir().expect("Failed to create temp dir");
+        let base = temp_dir.path();
 
-        fs::write(temp_dir.path().join("root.md"), "# Root").expect("Failed to write");
+        // Initialize a git repo so gitignore rules are active
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(base)
+            .output()
+            .expect("Failed to run git init");
 
-        let hidden_dir = temp_dir.path().join(".hidden");
-        fs::create_dir(&hidden_dir).expect("Failed to create hidden dir");
-        fs::write(hidden_dir.join("secret.md"), "# Secret").expect("Failed to write");
+        // Create .gitignore that ignores .venv/
+        fs::write(base.join(".gitignore"), ".venv/\n").expect("Failed to write .gitignore");
 
-        let git_dir = temp_dir.path().join(".git");
-        fs::create_dir(&git_dir).expect("Failed to create .git dir");
+        fs::write(base.join("root.md"), "# Root").expect("Failed to write");
+
+        // .git/ — always skipped
+        let git_dir = base.join(".git");
+        // .git already exists from git init, just add a file
         fs::write(git_dir.join("notes.md"), "# Notes").expect("Failed to write");
 
-        let result = scan_markdown_files(temp_dir.path()).expect("Failed to scan");
+        // .venv/ — gitignored, should be skipped
+        let venv_dir = base.join(".venv");
+        fs::create_dir(&venv_dir).expect("Failed to create .venv dir");
+        fs::write(venv_dir.join("secret.md"), "# Secret").expect("Failed to write");
 
-        assert_eq!(result.len(), 1);
+        // .claude/ — NOT gitignored, should be included
+        let claude_dir = base.join(".claude");
+        fs::create_dir(&claude_dir).expect("Failed to create .claude dir");
+        fs::write(claude_dir.join("notes.md"), "# Claude Notes").expect("Failed to write");
+
+        let result = scan_markdown_files(base).expect("Failed to scan");
+
+        let filenames: Vec<String> = result
+            .iter()
+            .map(|p| {
+                p.strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+
+        // root.md and .claude/notes.md should be found; .venv/ and .git/ should not
+        assert!(
+            filenames.contains(&"root.md".to_string()),
+            "Should include root.md, got: {:?}",
+            filenames
+        );
+        assert!(
+            filenames.contains(&".claude/notes.md".to_string()),
+            "Should include .claude/notes.md, got: {:?}",
+            filenames
+        );
+        assert!(
+            !filenames.iter().any(|f| f.contains(".venv")),
+            "Should not include .venv files, got: {:?}",
+            filenames
+        );
+        assert!(
+            !filenames.iter().any(|f| f.starts_with(".git/")),
+            "Should not include .git files, got: {:?}",
+            filenames
+        );
+    }
+
+    #[test]
+    fn test_scan_markdown_files_no_git_includes_dot_dirs() {
+        let temp_dir = tempdir().expect("Failed to create temp dir");
+        let base = temp_dir.path();
+
+        // No git init — not a git repo
+
+        fs::write(base.join("root.md"), "# Root").expect("Failed to write");
+
+        // .claude/ — should be included since no git repo means no gitignore filtering
+        let claude_dir = base.join(".claude");
+        fs::create_dir(&claude_dir).expect("Failed to create .claude dir");
+        fs::write(claude_dir.join("notes.md"), "# Claude Notes").expect("Failed to write");
+
+        // .hidden/ — also included without git
+        let hidden_dir = base.join(".hidden");
+        fs::create_dir(&hidden_dir).expect("Failed to create .hidden dir");
+        fs::write(hidden_dir.join("file.md"), "# Hidden").expect("Failed to write");
+
+        // .git/ — always skipped by override
+        let git_dir = base.join(".git");
+        fs::create_dir(&git_dir).expect("Failed to create .git dir");
+        fs::write(git_dir.join("notes.md"), "# Git Notes").expect("Failed to write");
+
+        let result = scan_markdown_files(base).expect("Failed to scan");
+
+        let filenames: Vec<String> = result
+            .iter()
+            .map(|p| {
+                p.strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+
+        assert!(
+            filenames.contains(&"root.md".to_string()),
+            "Should include root.md, got: {:?}",
+            filenames
+        );
+        assert!(
+            filenames.contains(&".claude/notes.md".to_string()),
+            "Should include .claude/notes.md, got: {:?}",
+            filenames
+        );
+        assert!(
+            filenames.contains(&".hidden/file.md".to_string()),
+            "Should include .hidden/file.md, got: {:?}",
+            filenames
+        );
+        assert!(
+            !filenames.iter().any(|f| f.starts_with(".git/")),
+            "Should not include .git files, got: {:?}",
+            filenames
+        );
     }
 
     #[test]

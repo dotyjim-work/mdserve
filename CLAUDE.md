@@ -47,7 +47,8 @@ Then navigate to `http://127.0.0.1:3000/` with Playwright.
   configurable server, or deployment target are out of scope.
 - **Zero config.** `mdserve file.md` must work with no flags or config files.
 - **Recursive scanning.** Directory mode recursively scans and watches
-  subdirectories. Hidden directories (dot-prefixed) are skipped.
+  subdirectories. Gitignored files/directories are skipped; `.git/` is always
+  skipped. Non-gitignored dot-prefixed directories (e.g. `.claude/`) are included.
 - **Pre-rendered in memory.** All tracked files are rendered to HTML on startup
   and on change. Serving is always from memory.
 - **Minimal client-side JS.** Most logic is server-side. Client JS handles
