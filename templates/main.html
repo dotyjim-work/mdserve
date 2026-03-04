@@ -685,6 +685,8 @@
     {% if mermaid_enabled %}
     <script src="/mermaid.min.js"></script>
     {% endif %}
+    <script src="/turndown.min.js"></script>
+    <script src="/turndown-plugin-gfm.min.js"></script>
     <script>
         let lastModified = Date.now();
 
@@ -953,6 +955,89 @@
             }
         }
 
+        // Copy selection as Markdown
+        function initCopyAsMarkdown() {
+            var turndownService = new TurndownService({
+                headingStyle: 'atx',
+                codeBlockStyle: 'fenced',
+                bulletListMarker: '-'
+            });
+            turndownService.use(turndownPluginGfm.gfm);
+
+            // Create hint badge
+            var hintBadge = document.createElement('div');
+            hintBadge.id = 'copy-md-hint';
+            hintBadge.textContent = 'Ctrl+Shift+C \u00b7 Copy as Markdown';
+            hintBadge.style.cssText = 'position:fixed;bottom:20px;right:20px;padding:8px 14px;background:var(--code-bg);color:var(--text-color);border:1px solid var(--border-color);border-radius:6px;font-size:12px;font-family:inherit;z-index:200;opacity:0;transition:opacity 0.2s;pointer-events:none;';
+            document.body.appendChild(hintBadge);
+
+            // Create success toast (reuses same element position)
+            var toast = document.createElement('div');
+            toast.id = 'copy-md-toast';
+            toast.textContent = 'Copied as Markdown';
+            toast.style.cssText = 'position:fixed;bottom:20px;right:20px;padding:8px 14px;background:var(--code-bg);color:var(--text-color);border:1px solid var(--border-color);border-radius:6px;font-size:12px;font-family:inherit;z-index:201;opacity:0;transition:opacity 0.2s;pointer-events:none;';
+            document.body.appendChild(toast);
+
+            var hintVisible = false;
+            var selectionTimer = null;
+
+            function showHint() {
+                if (!hintVisible) {
+                    hintVisible = true;
+                    hintBadge.style.opacity = '1';
+                }
+            }
+
+            function hideHint() {
+                if (hintVisible) {
+                    hintVisible = false;
+                    hintBadge.style.opacity = '0';
+                }
+            }
+
+            function showToast() {
+                hideHint();
+                toast.style.opacity = '1';
+                setTimeout(function() {
+                    toast.style.opacity = '0';
+                }, 1200);
+            }
+
+            // Listen for selection changes with debounce
+            document.addEventListener('selectionchange', function() {
+                clearTimeout(selectionTimer);
+                selectionTimer = setTimeout(function() {
+                    var sel = window.getSelection();
+                    if (sel && sel.toString().trim().length > 0) {
+                        showHint();
+                    } else {
+                        hideHint();
+                    }
+                }, 200);
+            });
+
+            // Listen for Ctrl+Shift+C
+            document.addEventListener('keydown', function(e) {
+                if (e.ctrlKey && e.shiftKey && e.key === 'C') {
+                    var sel = window.getSelection();
+                    if (!sel || sel.toString().trim().length === 0) return;
+
+                    e.preventDefault();
+
+                    // Clone the selection into a temporary container
+                    var container = document.createElement('div');
+                    for (var i = 0; i < sel.rangeCount; i++) {
+                        container.appendChild(sel.getRangeAt(i).cloneContents());
+                    }
+
+                    var markdown = turndownService.turndown(container.innerHTML);
+                    navigator.clipboard.writeText(markdown).then(function() {
+                        showToast();
+                    });
+                }
+            });
+        }
+
         // Auto-refresh functionality using WebSocket
         function setupLiveReload() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -992,6 +1077,7 @@
             initSidebar();
             initSidebarView();
             initMermaid();
+            initCopyAsMarkdown();
             setupLiveReload();
 
             // Modal close functionality

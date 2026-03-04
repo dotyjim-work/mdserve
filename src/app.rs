@@ -29,7 +29,9 @@ use tower_http::cors::CorsLayer;
 const TEMPLATE_NAME: &str = "main.html";
 static TEMPLATE_ENV: OnceLock<Environment<'static>> = OnceLock::new();
 const MERMAID_JS: &str = include_str!("../static/js/mermaid.min.js");
-const MERMAID_ETAG: &str = concat!("\"", env!("CARGO_PKG_VERSION"), "\"");
+const TURNDOWN_JS: &str = include_str!("../static/js/turndown.min.js");
+const TURNDOWN_GFM_JS: &str = include_str!("../static/js/turndown-plugin-gfm.min.js");
+const STATIC_JS_ETAG: &str = concat!("\"", env!("CARGO_PKG_VERSION"), "\"");
 
 type SharedMarkdownState = Arc<Mutex<MarkdownState>>;
 
@@ -475,6 +477,8 @@ fn new_router(
         .route("/", get(serve_html_root))
         .route("/ws", get(websocket_handler))
         .route("/mermaid.min.js", get(serve_mermaid_js))
+        .route("/turndown.min.js", get(serve_turndown_js))
+        .route("/turndown-plugin-gfm.min.js", get(serve_turndown_gfm_js))
         .fallback(get(serve_file))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -700,26 +704,39 @@ async fn render_markdown(state: &MarkdownState, current_file: &str) -> (StatusCo
 
 async fn serve_mermaid_js(headers: HeaderMap) -> impl IntoResponse {
     if is_etag_match(&headers) {
-        return mermaid_response(StatusCode::NOT_MODIFIED, None);
+        return js_response(StatusCode::NOT_MODIFIED, None);
     }
+    js_response(StatusCode::OK, Some(MERMAID_JS))
+}
 
-    mermaid_response(StatusCode::OK, Some(MERMAID_JS))
+async fn serve_turndown_js(headers: HeaderMap) -> impl IntoResponse {
+    if is_etag_match(&headers) {
+        return js_response(StatusCode::NOT_MODIFIED, None);
+    }
+    js_response(StatusCode::OK, Some(TURNDOWN_JS))
+}
+
+async fn serve_turndown_gfm_js(headers: HeaderMap) -> impl IntoResponse {
+    if is_etag_match(&headers) {
+        return js_response(StatusCode::NOT_MODIFIED, None);
+    }
+    js_response(StatusCode::OK, Some(TURNDOWN_GFM_JS))
 }
 
 fn is_etag_match(headers: &HeaderMap) -> bool {
     headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|etags| etags.split(',').any(|tag| tag.trim() == MERMAID_ETAG))
+        .is_some_and(|etags| etags.split(',').any(|tag| tag.trim() == STATIC_JS_ETAG))
 }
 
-fn mermaid_response(status: StatusCode, body: Option<&'static str>) -> impl IntoResponse {
+fn js_response(status: StatusCode, body: Option<&'static str>) -> impl IntoResponse {
     // Use no-cache to force revalidation on each request. This ensures clients
-    // get updated content when mdserve is rebuilt with a new Mermaid version,
+    // get updated content when mdserve is rebuilt with a new version,
     // while still benefiting from 304 responses via ETag matching.
     let headers = [
         (header::CONTENT_TYPE, "application/javascript"),
-        (header::ETAG, MERMAID_ETAG),
+        (header::ETAG, STATIC_JS_ETAG),
         (header::CACHE_CONTROL, "public, no-cache"),
     ];
 
@@ -1663,6 +1680,83 @@ classDiagram
 
         assert_eq!(response_200.status_code(), 200);
         assert!(!response_200.as_bytes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_turndown_js_serving() {
+        let (server, _temp_file) = create_test_server("# Test").await;
+
+        let response = server.get("/turndown.min.js").await;
+        assert_eq!(response.status_code(), 200);
+
+        let content_type = response.header("content-type");
+        assert_eq!(content_type, "application/javascript");
+
+        let etag = response.header("etag");
+        assert!(!etag.is_empty(), "ETag header should be present");
+
+        assert!(!response.as_bytes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_turndown_gfm_js_serving() {
+        let (server, _temp_file) = create_test_server("# Test").await;
+
+        let response = server.get("/turndown-plugin-gfm.min.js").await;
+        assert_eq!(response.status_code(), 200);
+
+        let content_type = response.header("content-type");
+        assert_eq!(content_type, "application/javascript");
+
+        let etag = response.header("etag");
+        assert!(!etag.is_empty(), "ETag header should be present");
+
+        assert!(!response.as_bytes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_turndown_js_etag_caching() {
+        let (server, _temp_file) = create_test_server("# Test").await;
+
+        let response = server.get("/turndown.min.js").await;
+        assert_eq!(response.status_code(), 200);
+        let etag = response.header("etag");
+
+        // Matching ETag should return 304
+        let response_304 = server
+            .get("/turndown.min.js")
+            .add_header(
+                axum::http::header::IF_NONE_MATCH,
+                axum::http::HeaderValue::from_str(etag.to_str().unwrap()).unwrap(),
+            )
+            .await;
+
+        assert_eq!(response_304.status_code(), 304);
+        assert!(response_304.as_bytes().is_empty());
+
+        // Non-matching ETag should return 200
+        let response_200 = server
+            .get("/turndown.min.js")
+            .add_header(
+                axum::http::header::IF_NONE_MATCH,
+                axum::http::HeaderValue::from_static("\"different-etag\""),
+            )
+            .await;
+
+        assert_eq!(response_200.status_code(), 200);
+        assert!(!response_200.as_bytes().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_rendered_page_includes_turndown_script_tags() {
+        let (server, _temp_file) = create_test_server("# Test").await;
+
+        let response = server.get("/").await;
+        assert_eq!(response.status_code(), 200);
+        let body = response.text();
+
+        assert!(body.contains(r#"<script src="/turndown.min.js"></script>"#));
+        assert!(body.contains(r#"<script src="/turndown-plugin-gfm.min.js"></script>"#));
     }
 
     #[tokio::test]
