@@ -63,6 +63,7 @@ pub(crate) fn scan_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
 
     let mut overrides = OverrideBuilder::new(dir);
     overrides.add("!.git/")?;
+    overrides.add("!.venv/")?;
     let overrides = overrides.build()?;
 
     let mut md_files = Vec::new();
@@ -317,18 +318,18 @@ fn sort_tree(nodes: &mut [TreeNode]) {
     }
 }
 
-/// Returns true if the path should be ignored: always true for `.git/` components,
-/// otherwise checks the gitignore matcher.
+/// Returns true if the path should be ignored: always true for `.git/` and `.venv/`
+/// components, otherwise checks the gitignore matcher.
 fn is_ignored_path(base_dir: &Path, path: &Path, gitignore: &ignore::gitignore::Gitignore) -> bool {
     let rel = match path.strip_prefix(base_dir) {
         Ok(r) => r,
         Err(_) => return false,
     };
 
-    // Always skip .git directory
+    // Always skip .git and .venv directories
     if rel
         .components()
-        .any(|c| c.as_os_str() == ".git")
+        .any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".venv")
     {
         return true;
     }
