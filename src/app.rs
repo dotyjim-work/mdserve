@@ -627,7 +627,7 @@ async fn serve_file(
     } else if is_image_file(&filename) {
         serve_static_file_inner(filename, state).await
     } else {
-        (StatusCode::NOT_FOUND, Html("File not found".to_string())).into_response()
+        serve_static_file_inner(filename, state).await
     }
 }
 
@@ -767,7 +767,7 @@ async fn serve_static_file_inner(
 
             match fs::read(&canonical_path) {
                 Ok(contents) => {
-                    let content_type = guess_image_content_type(&filename);
+                    let content_type = guess_content_type(&filename);
                     (
                         StatusCode::OK,
                         [(header::CONTENT_TYPE, content_type.as_str())],
@@ -804,7 +804,7 @@ fn is_image_file(file_path: &str) -> bool {
     )
 }
 
-fn guess_image_content_type(file_path: &str) -> String {
+fn guess_content_type(file_path: &str) -> String {
     let extension = std::path::Path::new(file_path)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -818,7 +818,7 @@ fn guess_image_content_type(file_path: &str) -> String {
         "webp" => "image/webp",
         "bmp" => "image/bmp",
         "ico" => "image/x-icon",
-        _ => "application/octet-stream",
+        _ => "text/plain; charset=utf-8",
     }
     .to_string()
 }
@@ -921,24 +921,24 @@ mod tests {
     }
 
     #[test]
-    fn test_guess_image_content_type() {
-        assert_eq!(guess_image_content_type("test.png"), "image/png");
-        assert_eq!(guess_image_content_type("test.jpg"), "image/jpeg");
-        assert_eq!(guess_image_content_type("test.jpeg"), "image/jpeg");
-        assert_eq!(guess_image_content_type("test.gif"), "image/gif");
-        assert_eq!(guess_image_content_type("test.svg"), "image/svg+xml");
-        assert_eq!(guess_image_content_type("test.webp"), "image/webp");
-        assert_eq!(guess_image_content_type("test.bmp"), "image/bmp");
-        assert_eq!(guess_image_content_type("test.ico"), "image/x-icon");
+    fn test_guess_content_type() {
+        assert_eq!(guess_content_type("test.png"), "image/png");
+        assert_eq!(guess_content_type("test.jpg"), "image/jpeg");
+        assert_eq!(guess_content_type("test.jpeg"), "image/jpeg");
+        assert_eq!(guess_content_type("test.gif"), "image/gif");
+        assert_eq!(guess_content_type("test.svg"), "image/svg+xml");
+        assert_eq!(guess_content_type("test.webp"), "image/webp");
+        assert_eq!(guess_content_type("test.bmp"), "image/bmp");
+        assert_eq!(guess_content_type("test.ico"), "image/x-icon");
 
-        assert_eq!(guess_image_content_type("test.PNG"), "image/png");
-        assert_eq!(guess_image_content_type("test.JPG"), "image/jpeg");
+        assert_eq!(guess_content_type("test.PNG"), "image/png");
+        assert_eq!(guess_content_type("test.JPG"), "image/jpeg");
 
         assert_eq!(
-            guess_image_content_type("test.xyz"),
-            "application/octet-stream"
+            guess_content_type("test.xyz"),
+            "text/plain; charset=utf-8"
         );
-        assert_eq!(guess_image_content_type("test"), "application/octet-stream");
+        assert_eq!(guess_content_type("test"), "text/plain; charset=utf-8");
     }
 
     #[test]
@@ -1464,15 +1464,15 @@ fn main() {
     }
 
     #[tokio::test]
-    async fn test_non_image_files_not_served() {
+    async fn test_non_markdown_files_served_as_plain_text() {
         let temp_dir = tempdir().expect("Failed to create temp dir");
 
         let md_content = "# Test";
         let md_path = temp_dir.path().join("test.md");
         fs::write(&md_path, md_content).expect("Failed to write markdown file");
 
-        let txt_path = temp_dir.path().join("secret.txt");
-        fs::write(&txt_path, "secret content").expect("Failed to write txt file");
+        let txt_path = temp_dir.path().join("notes.txt");
+        fs::write(&txt_path, "plain text content").expect("Failed to write txt file");
 
         let base_dir = temp_dir.path().to_path_buf();
         let tracked_files = vec![md_path];
@@ -1481,8 +1481,9 @@ fn main() {
             .expect("Failed to create router");
         let server = TestServer::new(router).expect("Failed to create test server");
 
-        let response = server.get("/secret.txt").await;
-        assert_eq!(response.status_code(), 404);
+        let response = server.get("/notes.txt").await;
+        assert_eq!(response.status_code(), 200);
+        assert_eq!(response.header("content-type"), "text/plain; charset=utf-8");
     }
 
     #[tokio::test]
